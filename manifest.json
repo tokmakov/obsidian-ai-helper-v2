@@ -1,9 +1,9 @@
 {
-    "id": "obsidian-ai-helper",
-    "name": "AI Helper",
-    "version": "1.0.0",
+    "id": "obsidian-ai-helper-v2",
+    "name": "AI Helper v2",
+    "version": "2.0.0",
     "minAppVersion": "1.0.0",
-    "description": "AI-ассистент прямо в Obsidian с поддержкой нескольких моделей",
+    "description": "AI-ассистент прямо в Obsidian с поддержкой чтения веб-страниц",
     "author": "Evgeniy",
     "isDesktopOnly": false
 }

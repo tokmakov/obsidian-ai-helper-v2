@@ -142,15 +142,15 @@
 .ai-chat-welcome {
     text-align: center;
     color: var(--text-muted);
-    margin-top: 40px;
-    font-size: 14px;
+    margin-top: 10px;
+    font-size: 1em;
 }
 
 /* Индикатор загрузки "AI думает..." */
 .ai-chat-loader {
     text-align: center;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 1em;
     padding: 8px;
     animation: ai-pulse 1.5s infinite;
 }

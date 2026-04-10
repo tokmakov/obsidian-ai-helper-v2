@@ -3,7 +3,7 @@ import { ChatMessage } from './types';
 import AIHelperPlugin from './main';
 import { ChatSession } from './session-manager';
 
-export const CHAT_VIEW_TYPE = 'ai-chat-view';
+export const CHAT_VIEW_TYPE = 'ai-chat-view-v2';
 
 export class AIChatView extends ItemView {
     plugin: AIHelperPlugin;
@@ -23,7 +23,7 @@ export class AIChatView extends ItemView {
     }
 
     getViewType(): string { return CHAT_VIEW_TYPE; }
-    getDisplayText(): string { return 'AI Helper'; }
+    getDisplayText(): string { return 'AI Helper v2'; }
     getIcon(): string { return 'message-square'; }
 
     async onOpen(): Promise<void> {
@@ -78,7 +78,7 @@ export class AIChatView extends ItemView {
         const headerTop = header.createDiv({ cls: 'ai-chat-header-top' });
 
         headerTop.createEl('span', {
-            text: '👽️ AI Helper',
+            text: '👽️ AI Helper v2',
             cls: 'ai-chat-title'
         });
 

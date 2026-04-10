@@ -1,18 +1,21 @@
 import { Notice } from 'obsidian';
 import { AIPluginSettings, ChatMessage } from './types';
 import { Logger } from './logger';
+import { WebReader } from './web-reader';
 
 export type AIResult =
     | { success: true; content: string; suggestions: string[] }
-    | { success: false };
+    | { success: false; retryable?: boolean };
 
 export class AIClient {
     private settings: AIPluginSettings;
     private logger: Logger;
+    private webReader: WebReader;
 
     constructor(settings: AIPluginSettings, logger: Logger) {
         this.settings = settings;
         this.logger = logger;
+        this.webReader = new WebReader();
     }
 
     updateSettings(settings: AIPluginSettings): void {
@@ -23,7 +26,6 @@ export class AIClient {
         // Ищем блок из трех подсказок в самом конце ответа, они
         // должны идти подряд, разделённые только переносами строк
         const blockPattern = /(\{[^}]+\}\s*\n\s*){2}\{[^}]+\}\s*$/;
-
         const blockMatch = raw.match(blockPattern);
 
         if (!blockMatch) {
@@ -36,16 +38,38 @@ export class AIClient {
         const pattern = /\{([^}]+)\}/g;
         let match;
         while ((match = pattern.exec(block)) !== null) {
-            suggestions.push(match[1].trim());
+            const suggestion = match[1];
+            if (suggestion) {
+                suggestions.push(suggestion.trim());
+            }
         }
 
-        // Убираем блок подсказок из контента
         const content = raw.slice(0, raw.length - block.length).trim();
-
         return { content, suggestions };
     }
 
     async sendMessage(messages: ChatMessage[]): Promise<AIResult> {
+        // Проверяем есть ли ссылки в последнем сообщении пользователя
+        const lastMessage = messages[messages.length - 1];
+
+        if (lastMessage?.role === 'user') {
+            const context = await this.webReader.buildContext(lastMessage.content);
+
+            if (context) {
+                new Notice('🌐 Загружаю содержимое ссылок...');
+                const messagesWithContext = [...messages];
+                messagesWithContext[messagesWithContext.length - 1] = {
+                    ...lastMessage,
+                    content: `${lastMessage.content}\n\n---\nКонтекст из ссылок:\n\n${context}`
+                };
+                return this.sendWithRetry(messagesWithContext);
+            }
+        }
+
+        return this.sendWithRetry(messages);
+    }
+
+    private async sendWithRetry(messages: ChatMessage[]): Promise<AIResult> {
         const MAX_RETRIES = 5;
         const RETRY_DELAY_MS = 1000;
 
@@ -68,8 +92,7 @@ export class AIClient {
         return { success: false };
     }
 
-
-    async trySendMessage(messages: ChatMessage): Promise<AIResult> {
+    async trySendMessage(messages: ChatMessage[]): Promise<AIResult> {
         const { apiKey, baseUrl, model } = this.settings;
 
         if (!apiKey) {
@@ -99,10 +122,10 @@ export class AIClient {
                         'Ты полезный AI-ассистент, встроенный в Obsidian — это база знаний для хранения заметок.',
                         'После основного ответа предложи три варианта следующего вопроса от лица пользователя.',
                         'Вопросы должны быть сформулированы от первого лица, как будто их задаёт пользователь.',
-                        'Формат строго следующий (включая фигурные скобки, без дополнительных пояснений):',
-                        '{Вопрос 1}',
-                        '{Вопрос 2}',
-                        '{Вопрос 3}'
+                        'Формат строго следующий — три вопроса в фигурных скобках, каждый на новой строке:',
+                        '{Как установить Git на Ubuntu?}',
+                        '{Чем отличается rebase от merge?}',
+                        '{Как откатить последний коммит?}'
                     ].join('\n')
                 },
                 ...cleanMessages
@@ -114,7 +137,6 @@ export class AIClient {
         let response: Response;
         try {
             const bodyStr = JSON.stringify(payload);
-            console.log('Размер payload (байт):', bodyStr.length);
             response = await fetch(`${baseUrl}/chat/completions`, {
                 method: 'POST',
                 headers: {
