@@ -84,6 +84,32 @@ export class AISettingTab extends PluginSettingTab {
                 })
             );
 
+        // --- Прокси ---
+        containerEl.createEl('h4', { text: 'Прокси для загрузки ссылок' });
+
+        new Setting(containerEl)
+            .setName('Использовать прокси')
+            .setDesc('Загружать веб-страницы через HTTP прокси')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.proxyEnabled)
+                .onChange(async (value) => {
+                    this.plugin.settings.proxyEnabled = value;
+                    await this.plugin.saveSettings();
+                })
+            );
+
+        new Setting(containerEl)
+            .setName('URL прокси')
+            .setDesc('Адрес HTTP прокси, например: http://user:pass@host:8080')
+            .addText(text => text
+                .setPlaceholder('http://user:pass@host:8080')
+                .setValue(this.plugin.settings.proxyUrl)
+                .onChange(async (value) => {
+                    this.plugin.settings.proxyUrl = value.trim();
+                    await this.plugin.saveSettings();
+                })
+            );
+
         containerEl.createEl('h4', { text: 'Прочие настройки' });
 
         // Хранение сессий

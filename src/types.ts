@@ -10,6 +10,8 @@ export interface AIPluginSettings {
     searchEnabled: boolean;
     yandexApiKey: string;
     yandexFolderId: string;
+    proxyEnabled: boolean;
+    proxyUrl: string;
 }
 
 export const DEFAULT_SETTINGS: AIPluginSettings = {
@@ -23,7 +25,9 @@ export const DEFAULT_SETTINGS: AIPluginSettings = {
     sessionsRetentionDays: 100,
     searchEnabled: false,
     yandexApiKey: '',
-    yandexFolderId: ''
+    yandexFolderId: '',
+    proxyEnabled: false,
+    proxyUrl: ''
 }
 
 export interface ChatMessage {

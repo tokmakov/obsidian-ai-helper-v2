@@ -17,12 +17,13 @@ export class AIClient {
     constructor(settings: AIPluginSettings, logger: Logger) {
         this.settings = settings;
         this.logger = logger;
-        this.webReader = new WebReader();
+        this.webReader = new WebReader(this.settings);
         this.webSearch = new WebSearch();
     }
 
     updateSettings(settings: AIPluginSettings): void {
         this.settings = settings;
+        this.webReader.updateSettings(settings); 
     }
 
     private parseSuggestions(raw: string): { content: string; suggestions: string[] } {

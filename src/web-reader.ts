@@ -1,6 +1,7 @@
 import { requestUrl } from 'obsidian';
 import { Readability } from '@mozilla/readability';
 import TurndownService from 'turndown';
+import { AIPluginSettings } from './types';
 
 export type WebReaderResult =
     | { success: true; title: string; url: string; markdown: string }
@@ -8,32 +9,76 @@ export type WebReaderResult =
 
 export class WebReader {
     private turndown: TurndownService;
+    private settings: AIPluginSettings;
 
-    constructor() {
+    constructor(settings: AIPluginSettings) {
+        this.settings = settings;
         this.turndown = new TurndownService({
             codeBlockStyle: 'fenced',
             headingStyle: 'atx'
         });
     }
 
+    updateSettings(settings: AIPluginSettings): void {
+        this.settings = settings;
+    }
+
+    private async applyProxy(): Promise<string | null> {
+        try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { session } = require('electron').remote ?? require('@electron/remote');
+            const current = await session.defaultSession.resolveProxy('https://example.com');
+            await session.defaultSession.setProxy({
+                proxyRules: this.settings.proxyUrl
+            });
+            console.log('[WebReader] Прокси установлен:', this.settings.proxyUrl);
+            return current;
+        } catch (error) {
+            console.log('[WebReader] Не удалось установить прокси:', error);
+            return null;
+        }
+    }
+
+    private async restoreProxy(previous: string | null): Promise<void> {
+        if (previous === null) return;
+        try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { session } = require('electron').remote ?? require('@electron/remote');
+            await session.defaultSession.setProxy({
+                proxyRules: previous === 'DIRECT' ? '' : previous
+            });
+            console.log('[WebReader] Прокси восстановлен:', previous);
+        } catch (error) {
+            console.log('[WebReader] Не удалось восстановить прокси:', error);
+        }
+    }
+
     extractUrls(text: string): string[] {
         const lines = text.split('\n');
         const urls: string[] = [];
 
-        // Идём с конца — берём только строки, которые являются URL
         for (let i = lines.length - 1; i >= 0; i--) {
             const line = lines[i]!.trim();
             if (/^https?:\/\/\S+$/.test(line)) {
                 urls.unshift(line);
             } else {
-                break; // первая «не ссылка» снизу — останавливаемся
+                break;
             }
         }
         return urls;
     }
 
     async readUrl(url: string): Promise<WebReaderResult> {
+        let previousProxy: string | null = null;
+
         try {
+            // Включаем прокси если настроен
+            if (this.settings.proxyEnabled && this.settings.proxyUrl) {
+                previousProxy = await this.applyProxy();
+            }
+
+            console.log('[WebReader] Загружаю:', url);
+
             const response = await requestUrl({
                 url,
                 headers: {
@@ -42,12 +87,13 @@ export class WebReader {
                 }
             });
 
+            console.log('[WebReader] Статус:', response.status);
+
             if (response.status !== 200) {
                 return { success: false, url, error: `HTTP ${response.status}` };
             }
 
             const html = response.text;
-
             const parser = new DOMParser();
             const doc = parser.parseFromString(html, 'text/html');
 
@@ -60,19 +106,34 @@ export class WebReader {
 
             const markdown = this.turndown.turndown(article.content);
 
+            const rawTitle = article.title ?? url;
+            const title = (() => {
+                try {
+                    const bytes = Uint8Array.from(
+                        rawTitle.split('').map((c: string) => c.charCodeAt(0))
+                    );
+                    return new TextDecoder('utf-8').decode(bytes);
+                } catch {
+                    return rawTitle;
+                }
+            })();
+
             return {
                 success: true,
-                title: article.title ?? url,
+                title,
                 url,
                 markdown: markdown.substring(0, 20000)
             };
 
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
+            console.log('[WebReader] Ошибка:', message);
             return { success: false, url, error: message };
+        } finally {
+            // Восстанавливаем прокси в любом случае
+            await this.restoreProxy(previousProxy);
         }
     }
-
 
     async buildContext(text: string): Promise<string> {
         const urls = this.extractUrls(text);
