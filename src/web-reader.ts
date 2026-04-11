@@ -17,14 +17,23 @@ export class WebReader {
     }
 
     extractUrls(text: string): string[] {
-        const urlPattern = /https?:\/\/[^\s]+/g;
-        return text.match(urlPattern) ?? [];
+        const lines = text.split('\n');
+        const urls: string[] = [];
+
+        // Идём с конца — берём только строки, которые являются URL
+        for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i]!.trim();
+            if (/^https?:\/\/\S+$/.test(line)) {
+                urls.unshift(line);
+            } else {
+                break; // первая «не ссылка» снизу — останавливаемся
+            }
+        }
+        return urls;
     }
 
     async readUrl(url: string): Promise<WebReaderResult> {
         try {
-            console.log('[WebReader] Загружаю:', url);
-
             const response = await requestUrl({
                 url,
                 headers: {
@@ -32,8 +41,6 @@ export class WebReader {
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
                 }
             });
-
-            console.log('[WebReader] Статус:', response.status);
 
             if (response.status !== 200) {
                 return { success: false, url, error: `HTTP ${response.status}` };
@@ -62,7 +69,6 @@ export class WebReader {
 
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            console.log('[WebReader] Ошибка:', message);
             return { success: false, url, error: message };
         }
     }

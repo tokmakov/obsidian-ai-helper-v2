@@ -16,9 +16,11 @@ export class AISettingTab extends PluginSettingTab {
 
         containerEl.createEl('h2', { text: 'AI Helper — Настройки' });
 
+        containerEl.createEl('h4', { text: 'Агрегатор LLM моделей' });
+
         new Setting(containerEl)
-            .setName('Base URL')
-            .setDesc('Базовый адрес API агрегатора')
+            .setName('Base URL агрегатора LLM')
+            .setDesc('Базовый адрес API агрегатора LLM моделей')
             .addText(text => text
                 .setPlaceholder('https://routerai.ru/api/v1')
                 .setValue(this.plugin.settings.baseUrl)
@@ -29,8 +31,8 @@ export class AISettingTab extends PluginSettingTab {
             );
 
         new Setting(containerEl)
-            .setName('API Key')
-            .setDesc('Ключ доступа к агрегатору')
+            .setName('API Key агрегатора LLM')
+            .setDesc('Ключ доступа к API агрегатора LLM моделей')
             .addText(text => {
                 text
                     .setPlaceholder('sk-...')
@@ -41,6 +43,48 @@ export class AISettingTab extends PluginSettingTab {
                     });
                 text.inputEl.type = 'password';
             });
+
+        // --- Поиск в интернете ---
+        containerEl.createEl('h3', { text: 'Поиск в интернете' });
+
+        new Setting(containerEl)
+            .setName('Включить поиск')
+            .setDesc('Включить возможность поиска через Яндекс')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.searchEnabled)
+                .onChange(async (value) => {
+                    this.plugin.settings.searchEnabled = value;
+                    await this.plugin.saveSettings();
+                })
+            );
+
+        new Setting(containerEl)
+            .setName('Яндекс API Key')
+            .setDesc('Ключ сервисного аккаунта Яндекс Cloud')
+            .addText(text => {
+                text
+                    .setPlaceholder('AQVNyl...')
+                    .setValue(this.plugin.settings.yandexApiKey)
+                    .onChange(async (value) => {
+                        this.plugin.settings.yandexApiKey = value.trim();
+                        await this.plugin.saveSettings();
+                    });
+                text.inputEl.type = 'password';
+            });
+
+        new Setting(containerEl)
+            .setName('Яндекс Folder ID')
+            .setDesc('Идентификатор каталога в Яндекс Cloud')
+            .addText(text => text
+                .setPlaceholder('b1g...')
+                .setValue(this.plugin.settings.yandexFolderId)
+                .onChange(async (value) => {
+                    this.plugin.settings.yandexFolderId = value.trim();
+                    await this.plugin.saveSettings();
+                })
+            );
+
+        containerEl.createEl('h4', { text: 'Прочие настройки' });
 
         // Хранение сессий
         new Setting(containerEl)
@@ -101,6 +145,8 @@ export class AISettingTab extends PluginSettingTab {
                 })
             );
 
+        containerEl.createEl('h4', { text: 'Выбор LLM модели' });
+
         new Setting(containerEl)
             .setName('Список моделей')
             .setDesc('Загрузить актуальный список моделей с сервера')
@@ -121,15 +167,13 @@ export class AISettingTab extends PluginSettingTab {
             this.renderModelSelector(containerEl);
         } else {
             containerEl.createEl('p', {
-                text: '⚠️ Сначала введи API Key и нажми "Загрузить модели"',
+                text: '⚠️ Сначала введи API Key и нажми «Загрузить модели»',
                 cls: 'setting-item-description'
             });
         }
     }
 
     private renderModelSelector(containerEl: HTMLElement): void {
-        containerEl.createEl('h3', { text: 'Выбор модели' });
-
         // --- Поле поиска ---
         new Setting(containerEl)
             .setName('Поиск модели')

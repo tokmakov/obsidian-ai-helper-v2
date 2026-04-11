@@ -1,21 +1,24 @@
 import { Notice } from 'obsidian';
-import { AIPluginSettings, ChatMessage } from './types';
+import { AIPluginSettings, ChatMessage, SourceReport } from './types';
 import { Logger } from './logger';
 import { WebReader } from './web-reader';
+import { WebSearch, SearchResult } from './web-search';
 
 export type AIResult =
-    | { success: true; content: string; suggestions: string[] }
+    | { success: true; content: string; suggestions: string[]; report: SourceReport[] }
     | { success: false; retryable?: boolean };
 
 export class AIClient {
     private settings: AIPluginSettings;
     private logger: Logger;
     private webReader: WebReader;
+    private webSearch: WebSearch;
 
     constructor(settings: AIPluginSettings, logger: Logger) {
         this.settings = settings;
         this.logger = logger;
         this.webReader = new WebReader();
+        this.webSearch = new WebSearch();
     }
 
     updateSettings(settings: AIPluginSettings): void {
@@ -23,8 +26,6 @@ export class AIClient {
     }
 
     private parseSuggestions(raw: string): { content: string; suggestions: string[] } {
-        // Ищем блок из трех подсказок в самом конце ответа, они
-        // должны идти подряд, разделённые только переносами строк
         const blockPattern = /(\{[^}]+\}\s*\n\s*){2}\{[^}]+\}\s*$/;
         const blockMatch = raw.match(blockPattern);
 
@@ -32,7 +33,6 @@ export class AIClient {
             return { content: raw.trim(), suggestions: [] };
         }
 
-        // Извлекаем отдельные вопросы из найденного блока
         const block = blockMatch[0];
         const suggestions: string[] = [];
         const pattern = /\{([^}]+)\}/g;
@@ -48,25 +48,134 @@ export class AIClient {
         return { content, suggestions };
     }
 
-    async sendMessage(messages: ChatMessage[]): Promise<AIResult> {
-        // Проверяем есть ли ссылки в последнем сообщении пользователя
+    async sendMessage(
+        messages: ChatMessage[],
+        loadLinks: boolean,
+        doSearch: boolean
+    ): Promise<AIResult> {
+        const report: SourceReport[] = [];
         const lastMessage = messages[messages.length - 1];
 
         if (lastMessage?.role === 'user') {
-            const context = await this.webReader.buildContext(lastMessage.content);
 
-            if (context) {
-                new Notice('🌐 Загружаю содержимое ссылок...');
-                const messagesWithContext = [...messages];
-                messagesWithContext[messagesWithContext.length - 1] = {
-                    ...lastMessage,
-                    content: `${lastMessage.content}\n\n---\nКонтекст из ссылок:\n\n${context}`
-                };
-                return this.sendWithRetry(messagesWithContext);
+            // Приоритет 1 — загружаем ссылки если чекбокс установлен
+            if (loadLinks) {
+                const urls = this.webReader.extractUrls(lastMessage.content);
+
+                if (urls.length > 0) {
+                    new Notice('🌐 Загружаю содержимое ссылок...');
+                    const parts: string[] = [];
+
+                    for (const url of urls) {
+                        const result = await this.webReader.readUrl(url);
+                        if (result.success) {
+                            report.push({
+                                type: 'link',
+                                url,
+                                title: result.title,
+                                success: true
+                            });
+                            parts.push([
+                                `## ${result.title}`,
+                                `**Источник:** ${url}`,
+                                `---`,
+                                result.markdown
+                            ].join('\n\n'));
+                        } else {
+                            report.push({
+                                type: 'link',
+                                url,
+                                success: false,
+                                error: result.error
+                            });
+                        }
+                    }
+
+                    if (parts.length > 0) {
+                        const context = parts.join('\n\n---\n\n');
+                        const messagesWithContext = [...messages];
+                        messagesWithContext[messagesWithContext.length - 1] = {
+                            ...lastMessage,
+                            content: `${lastMessage.content}\n\n---\nКонтекст из ссылок:\n\n${context}`
+                        };
+                        const result = await this.sendWithRetry(messagesWithContext);
+                        if (result.success) {
+                            return { ...result, report };
+                        }
+                        return result;
+                    }
+                }
+            }
+
+            // Приоритет 2 — поиск в Яндексе если чекбокс установлен
+            if (doSearch &&
+                this.settings.yandexApiKey &&
+                this.settings.yandexFolderId) {
+
+                new Notice('🔍 Ищу в интернете (Яндекс)...');
+                try {
+                    const searchResults = await this.webSearch.searchYandex(
+                        lastMessage.content,
+                        {
+                            apiKey: this.settings.yandexApiKey,
+                            folderId: this.settings.yandexFolderId
+                        }
+                    );
+
+                    if (searchResults.length > 0) {
+                        const parts: string[] = [];
+
+                        for (const sr of searchResults.slice(0, 3)) {
+                            const pageResult = await this.webReader.readUrl(sr.url);
+                            if (pageResult.success) {
+                                report.push({
+                                    type: 'search',
+                                    url: sr.url,
+                                    title: pageResult.title,
+                                    success: true
+                                });
+                                parts.push([
+                                    `### ${pageResult.title}`,
+                                    sr.url,
+                                    pageResult.markdown
+                                ].join('\n\n'));
+                            } else {
+                                report.push({
+                                    type: 'search',
+                                    url: sr.url,
+                                    title: sr.title,
+                                    success: false,
+                                    error: pageResult.error
+                                });
+                                // Используем сниппет если страница не загрузилась
+                                parts.push(`### ${sr.title}\n${sr.url}\n${sr.snippet}`);
+                            }
+                        }
+
+                        const searchContext = parts.join('\n\n---\n\n');
+                        const messagesWithContext = [...messages];
+                        messagesWithContext[messagesWithContext.length - 1] = {
+                            ...lastMessage,
+                            content: `${lastMessage.content}\n\n---\nРезультаты поиска в интернете:\n\n${searchContext}`
+                        };
+                        const result = await this.sendWithRetry(messagesWithContext);
+                        if (result.success) {
+                            return { ...result, report };
+                        }
+                        return result;
+                    }
+                } catch (error) {
+                    await this.logger.error('Ошибка поиска', error);
+                    new Notice('⚠️ Поиск не удался, отвечаю без интернета');
+                }
             }
         }
 
-        return this.sendWithRetry(messages);
+        const result = await this.sendWithRetry(messages);
+        if (result.success) {
+            return { ...result, report };
+        }
+        return result;
     }
 
     private async sendWithRetry(messages: ChatMessage[]): Promise<AIResult> {
@@ -78,7 +187,6 @@ export class AIClient {
 
             if (result.success) return result;
 
-            // Повторяем только при сетевых ошибках
             if (result.retryable && attempt < MAX_RETRIES) {
                 new Notice(`⏳ Соединение прервано, повтор...`);
                 await this.logger.info(`Попытка ${attempt} не удалась, повторяем через ${RETRY_DELAY_MS} мс...`);
@@ -136,7 +244,6 @@ export class AIClient {
 
         let response: Response;
         try {
-            const bodyStr = JSON.stringify(payload);
             response = await fetch(`${baseUrl}/chat/completions`, {
                 method: 'POST',
                 headers: {
@@ -160,7 +267,6 @@ export class AIClient {
             } catch {
                 details = await response.text();
             }
-
             await this.logger.error('Ошибка HTTP', { status: response.status, details });
             new Notice(`❌ Ошибка сервера ${response.status} — подробности в логах`);
             return { success: false };
@@ -178,7 +284,8 @@ export class AIClient {
             }
 
             const { content, suggestions } = this.parseSuggestions(raw);
-            return { success: true, content, suggestions };
+            // report здесь пустой — он формируется в sendMessage
+            return { success: true, content, suggestions, report: [] };
 
         } catch (error) {
             await this.logger.error('Ошибка парсинга ответа', error);

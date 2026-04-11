@@ -1,5 +1,5 @@
 import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, MarkdownView, Editor } from 'obsidian';
-import { ChatMessage } from './types';
+import { ChatMessage, SourceReport } from './types';
 import AIHelperPlugin from './main';
 import { ChatSession } from './session-manager';
 
@@ -16,6 +16,9 @@ export class AIChatView extends ItemView {
     private inputEl: HTMLTextAreaElement;
     private sendButton: HTMLButtonElement;
     private isLoading: boolean = false;
+
+    private loadLinksCheckbox: HTMLInputElement;
+    private searchCheckbox: HTMLInputElement;
 
     constructor(leaf: WorkspaceLeaf, plugin: AIHelperPlugin) {
         super(leaf);
@@ -139,6 +142,25 @@ export class AIChatView extends ItemView {
             }
         }, true);
 
+        // Строка с чекбоксами «Загружать ссылки» и «Искать в Яндекс»
+        const checkboxRow = inputArea.createDiv({ cls: 'ai-chat-checkbox-row' });
+
+        // Первый чекбокс — «Загружать ссылки»
+        const linksLabel = checkboxRow.createEl('label', { cls: 'ai-chat-checkbox-label' });
+        this.loadLinksCheckbox = linksLabel.createEl('input', { attr: { type: 'checkbox' } });
+        linksLabel.createEl('span', { text: ' 🌐 Загружать ссылки' });
+
+        // Второй чекбокс — «Искать в Яндекс»
+        const searchLabel = checkboxRow.createEl('label', { cls: 'ai-chat-checkbox-label' });
+        this.searchCheckbox = searchLabel.createEl('input', { attr: { type: 'checkbox' } });
+        searchLabel.createEl('span', { text: ' 🔍 Искать в Яндекс' });
+
+        // Если поиск не настроен — блокируем чекбокс
+        if (!this.plugin.settings.yandexApiKey || !this.plugin.settings.yandexFolderId) {
+            this.searchCheckbox.disabled = true;
+            searchLabel.title = 'Настрой Яндекс API в настройках плагина';
+        }
+
         const inputFooter = inputArea.createDiv({ cls: 'ai-chat-input-footer' });
 
         inputFooter.createEl('span', {
@@ -152,6 +174,7 @@ export class AIChatView extends ItemView {
         });
         this.sendButton.addEventListener('click', () => this.handleSend());
     }
+
 
     private renderWelcome(): void {
         const welcome = this.messagesContainer.createDiv({ cls: 'ai-chat-welcome' });
@@ -292,6 +315,51 @@ export class AIChatView extends ItemView {
         });
     }
 
+    private renderReport(report: SourceReport[]): void {
+        const reportEl = this.messagesContainer.createDiv({ cls: 'ai-chat-report' });
+
+        // Заголовок — кликабельный, сворачивает/разворачивает
+        const header = reportEl.createEl('div', { cls: 'ai-chat-report-header' });
+        header.createEl('span', { text: '📋 Источники' });
+        const toggle = header.createEl('span', {
+            text: ' ▼',
+            cls: 'ai-chat-report-toggle'
+        });
+
+        const body = reportEl.createDiv({ cls: 'ai-chat-report-body' });
+
+        for (const item of report) {
+            const row = body.createDiv({ cls: 'ai-chat-report-row' });
+
+            const icon = item.type === 'link' ? '🌐' : '🔍';
+            const status = item.success ? '✅' : '❌';
+            const title = item.title ?? item.url;
+
+            row.createEl('span', { text: `${icon} ${status} `, cls: 'ai-chat-report-status' });
+            row.createEl('a', {
+                text: title,
+                cls: 'ai-chat-report-link',
+                attr: { href: item.url, target: '_blank' }
+            });
+
+            if (!item.success && item.error) {
+                row.createEl('span', {
+                    text: ` — ${item.error}`,
+                    cls: 'ai-chat-report-error'
+                });
+            }
+        }
+
+        // Логика сворачивания
+        header.addEventListener('click', () => {
+            const isHidden = body.style.display === 'none';
+            body.style.display = isHidden ? 'block' : 'none';
+            toggle.textContent = isHidden ? ' ▼' : ' ▶';
+        });
+
+        this.scrollToBottom();
+    }
+
     private async handleSend(): Promise<void> {
         const text = this.inputEl.value.trim();
         if (!text) return;
@@ -311,7 +379,14 @@ export class AIChatView extends ItemView {
 
         this.setLoading(true);
 
-        const result = await this.plugin.aiClient.sendMessage(this.messages);
+        const loadLinks = this.loadLinksCheckbox.checked;
+        const doSearch = this.searchCheckbox.checked;
+
+        // Сбрасываем чекбоксы после отправки
+        this.loadLinksCheckbox.checked = false;
+        this.searchCheckbox.checked = false;
+
+        const result = await this.plugin.aiClient.sendMessage(this.messages, loadLinks, doSearch);
 
         this.setLoading(false);
         this.inputEl.focus();
@@ -325,6 +400,11 @@ export class AIChatView extends ItemView {
             this.messages.push(assistantMessage);
             await this.renderMessage(assistantMessage);
 
+            // Показываем блок отчёта если есть что показать
+            if (result.report.length > 0) {
+                this.renderReport(result.report);
+            }
+
             // Показываем подсказки под ответом
             this.renderSuggestions(result.suggestions);
 
@@ -336,8 +416,6 @@ export class AIChatView extends ItemView {
                 await this.refreshSessionList();
             }
         }
-
-        // Если !result.success — Notice уже показан в ai-client.ts
     }
 
     private setLoading(isLoading: boolean): void {
