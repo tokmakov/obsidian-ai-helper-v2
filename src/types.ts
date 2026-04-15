@@ -7,7 +7,10 @@ export interface AIPluginSettings {
     loggingEnabled: boolean;
     logsRetentionDays: number;
     sessionsRetentionDays: number;
+    fetchTimeout: number;
+    fetchRetries: number;
     searchEnabled: boolean;
+    searchResultsLimit: number;
     yandexApiKey: string;
     yandexFolderId: string;
     proxyEnabled: boolean;
@@ -23,7 +26,10 @@ export const DEFAULT_SETTINGS: AIPluginSettings = {
     loggingEnabled: false,
     logsRetentionDays: 30,
     sessionsRetentionDays: 100,
+    fetchTimeout: 10000,
+    fetchRetries: 3,
     searchEnabled: false,
+    searchResultsLimit: 3,
     yandexApiKey: '',
     yandexFolderId: '',
     proxyEnabled: false,

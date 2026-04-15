@@ -17,13 +17,13 @@ export class AIClient {
     constructor(settings: AIPluginSettings, logger: Logger) {
         this.settings = settings;
         this.logger = logger;
-        this.webReader = new WebReader(this.settings);
+        this.webReader = new WebReader(this.settings, this.logger);
         this.webSearch = new WebSearch();
     }
 
     updateSettings(settings: AIPluginSettings): void {
         this.settings = settings;
-        this.webReader.updateSettings(settings); 
+        this.webReader.updateSettings(settings);
     }
 
     private parseSuggestions(raw: string): { content: string; suggestions: string[] } {
@@ -126,7 +126,7 @@ export class AIClient {
                     if (searchResults.length > 0) {
                         const parts: string[] = [];
 
-                        for (const sr of searchResults.slice(0, 3)) {
+                        for (const sr of searchResults.slice(0, this.settings.searchResultsLimit)) {
                             const pageResult = await this.webReader.readUrl(sr.url);
                             if (pageResult.success) {
                                 report.push({
@@ -270,7 +270,8 @@ export class AIClient {
             }
             await this.logger.error('Ошибка HTTP', { status: response.status, details });
             new Notice(`❌ Ошибка сервера ${response.status} — подробности в логах`);
-            return { success: false };
+            const retryable = response.status === 429 || response.status === 503;
+            return { success: false, retryable };
         }
 
         try {

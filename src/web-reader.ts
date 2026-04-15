@@ -1,7 +1,8 @@
-import { requestUrl } from 'obsidian';
+import { requestUrl, Notice } from 'obsidian';
 import { Readability } from '@mozilla/readability';
 import TurndownService from 'turndown';
 import { AIPluginSettings } from './types';
+import { Logger } from './logger';
 
 export type WebReaderResult =
     | { success: true; title: string; url: string; markdown: string }
@@ -10,9 +11,12 @@ export type WebReaderResult =
 export class WebReader {
     private turndown: TurndownService;
     private settings: AIPluginSettings;
+    private logger: Logger;
+    private proxyApplied: boolean = false;
 
-    constructor(settings: AIPluginSettings) {
+    constructor(settings: AIPluginSettings, logger: Logger) {
         this.settings = settings;
+        this.logger = logger;
         this.turndown = new TurndownService({
             codeBlockStyle: 'fenced',
             headingStyle: 'atx'
@@ -23,40 +27,37 @@ export class WebReader {
         this.settings = settings;
     }
 
-    private async applyProxy(): Promise<string | null> {
+    private async applyProxy(): Promise<void> {
         try {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const { session } = require('electron').remote ?? require('@electron/remote');
-            const current = await session.defaultSession.resolveProxy('https://example.com');
-            await session.defaultSession.setProxy({
+            await this.logger.info(`[WebReader] Устанавливаю прокси: ${this.settings.proxyUrl}`);
+            const { remote } = require('electron');
+            await remote.session.defaultSession.setProxy({
                 proxyRules: this.settings.proxyUrl
             });
-            console.log('[WebReader] Прокси установлен:', this.settings.proxyUrl);
-            return current;
+            const after = await remote.session.defaultSession.resolveProxy('https://example.com');
+            await this.logger.info(`[WebReader] Прокси установлен: ${after}`);
+            this.proxyApplied = true;
+            new Notice('🔄 Загружаю ссылки через прокси...');
         } catch (error) {
-            console.log('[WebReader] Не удалось установить прокси:', error);
-            return null;
+            await this.logger.error('[WebReader] Не удалось установить прокси', error);
         }
     }
 
-    private async restoreProxy(previous: string | null): Promise<void> {
-        if (previous === null) return;
+    private async restoreProxy(): Promise<void> {
+        if (!this.proxyApplied) return;
         try {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const { session } = require('electron').remote ?? require('@electron/remote');
-            await session.defaultSession.setProxy({
-                proxyRules: previous === 'DIRECT' ? '' : previous
-            });
-            console.log('[WebReader] Прокси восстановлен:', previous);
+            const { remote } = require('electron');
+            await remote.session.defaultSession.setProxy({ proxyRules: '' });
+            this.proxyApplied = false;
+            await this.logger.info('[WebReader] Прокси восстановлен');
         } catch (error) {
-            console.log('[WebReader] Не удалось восстановить прокси:', error);
+            await this.logger.error('[WebReader] Не удалось восстановить прокси', error);
         }
     }
 
     extractUrls(text: string): string[] {
         const lines = text.split('\n');
         const urls: string[] = [];
-
         for (let i = lines.length - 1; i >= 0; i--) {
             const line = lines[i]!.trim();
             if (/^https?:\/\/\S+$/.test(line)) {
@@ -69,16 +70,59 @@ export class WebReader {
     }
 
     async readUrl(url: string): Promise<WebReaderResult> {
-        let previousProxy: string | null = null;
+        const retries = this.settings.fetchRetries;
+        const timeout = this.settings.fetchTimeout;
+
+        // Попытки без прокси
+        for (let i = 1; i <= retries; i++) {
+            await this.logger.info(`[WebReader] Попытка ${i}/${retries} без прокси: ${url}`);
+            try {
+                const result = await this.fetchUrl(url, timeout);
+                if (result.success) return result;
+                await this.logger.info(`[WebReader] Попытка ${i} без прокси не удалась: ${result.error}`);
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                await this.logger.info(`[WebReader] Попытка ${i} без прокси упала: ${message}`);
+            }
+        }
+
+        // Если прокси не настроен — возвращаем ошибку
+        if (!this.settings.proxyEnabled || !this.settings.proxyUrl) {
+            await this.logger.info('[WebReader] Прокси не настроен, все попытки исчерпаны');
+            return { success: false, url, error: 'Не удалось загрузить страницу' };
+        }
+
+        // Попытки через прокси
+        new Notice('⚠️ Прямая загрузка не удалась, пробую через прокси...');
+        await this.applyProxy();
 
         try {
-            // Включаем прокси если настроен
-            if (this.settings.proxyEnabled && this.settings.proxyUrl) {
-                previousProxy = await this.applyProxy();
+            for (let i = 1; i <= retries; i++) {
+                await this.logger.info(`[WebReader] Попытка ${i}/${retries} через прокси: ${url}`);
+                try {
+                    const result = await this.fetchUrl(url, timeout);
+                    if (result.success) return result;
+                    await this.logger.info(`[WebReader] Попытка ${i} через прокси не удалась: ${result.error}`);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    await this.logger.info(`[WebReader] Попытка ${i} через прокси упала: ${message}`);
+                }
             }
+        } finally {
+            await this.restoreProxy();
+        }
 
-            console.log('[WebReader] Загружаю:', url);
+        return { success: false, url, error: 'Не удалось загрузить страницу ни напрямую, ни через прокси' };
+    }
 
+    private async fetchUrl(url: string, timeout: number): Promise<WebReaderResult> {
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+            controller.abort();
+            this.logger.info(`[WebReader] Таймаут ${timeout}мс истёк: ${url}`);
+        }, timeout);
+
+        try {
             const response = await requestUrl({
                 url,
                 headers: {
@@ -87,13 +131,15 @@ export class WebReader {
                 }
             });
 
-            console.log('[WebReader] Статус:', response.status);
+            clearTimeout(timer);
+            await this.logger.info(`[WebReader] Статус: ${response.status} — ${url}`);
 
             if (response.status !== 200) {
                 return { success: false, url, error: `HTTP ${response.status}` };
             }
 
-            const html = response.text;
+            const buffer = response.arrayBuffer;
+            const html = new TextDecoder('utf-8').decode(buffer);
             const parser = new DOMParser();
             const doc = parser.parseFromString(html, 'text/html');
 
@@ -104,19 +150,8 @@ export class WebReader {
                 return { success: false, url, error: 'Не удалось выделить контент страницы' };
             }
 
-            const markdown = this.turndown.turndown(article.content);
-
-            const rawTitle = article.title ?? url;
-            const title = (() => {
-                try {
-                    const bytes = Uint8Array.from(
-                        rawTitle.split('').map((c: string) => c.charCodeAt(0))
-                    );
-                    return new TextDecoder('utf-8').decode(bytes);
-                } catch {
-                    return rawTitle;
-                }
-            })();
+            const markdown = this.turndown.turndown(this.decodeHtmlEntities(article.content));
+            const title = this.decodeHtmlEntities(article.title ?? url);
 
             return {
                 success: true,
@@ -126,13 +161,27 @@ export class WebReader {
             };
 
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            console.log('[WebReader] Ошибка:', message);
-            return { success: false, url, error: message };
-        } finally {
-            // Восстанавливаем прокси в любом случае
-            await this.restoreProxy(previousProxy);
+            clearTimeout(timer);
+            if (controller.signal.aborted) {
+                return { success: false, url, error: `Таймаут ${timeout}мс` };
+            }
+            throw error;
         }
+    }
+
+    private decodeHtmlEntities(text: string): string {
+        return text
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&/g, '&')
+            .replace(/</g, '<')
+            .replace(/>/g, '>')
+            .replace(/"/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&mdash;/g, '—')
+            .replace(/&ndash;/g, '–')
+            .replace(/&laquo;/g, '«')
+            .replace(/&raquo;/g, '»')
+            .replace(/&hellip;/g, '...');
     }
 
     async buildContext(text: string): Promise<string> {

@@ -44,8 +44,41 @@ export class AISettingTab extends PluginSettingTab {
                 text.inputEl.type = 'password';
             });
 
+        // --- Скачивание ссылок ---
+        containerEl.createEl('h4', { text: 'Скачивание ссылок' });
+
+        new Setting(containerEl)
+            .setName('Таймаут загрузки (мс)')
+            .setDesc('Сколько миллисекунд ждать ответа от сервера.')
+            .addText(text => text
+                .setPlaceholder('5000')
+                .setValue(String(this.plugin.settings.fetchTimeout))
+                .onChange(async (value) => {
+                    const num = parseInt(value);
+                    if (!isNaN(num) && num > 0) {
+                        this.plugin.settings.fetchTimeout = num;
+                        await this.plugin.saveSettings();
+                    }
+                })
+            );
+
+        new Setting(containerEl)
+            .setName('Количество попыток')
+            .setDesc('Сколько раз пытаться загрузить ссылку напрямую и через прокси.')
+            .addText(text => text
+                .setPlaceholder('3')
+                .setValue(String(this.plugin.settings.fetchRetries))
+                .onChange(async (value) => {
+                    const num = parseInt(value);
+                    if (!isNaN(num) && num > 0) {
+                        this.plugin.settings.fetchRetries = num;
+                        await this.plugin.saveSettings();
+                    }
+                })
+            );
+
         // --- Поиск в интернете ---
-        containerEl.createEl('h3', { text: 'Поиск в интернете' });
+        containerEl.createEl('h4', { text: 'Поиск в интернете' });
 
         new Setting(containerEl)
             .setName('Включить поиск')
@@ -54,6 +87,19 @@ export class AISettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.searchEnabled)
                 .onChange(async (value) => {
                     this.plugin.settings.searchEnabled = value;
+                    await this.plugin.saveSettings();
+                })
+            );
+
+        new Setting(containerEl)
+            .setName('Кол-во ссылок из поиска')
+            .setDesc('Сколько ссылок из поиска загружать для контекста')
+            .addSlider(slider => slider
+                .setLimits(1, 10, 1)
+                .setValue(this.plugin.settings.searchResultsLimit)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.searchResultsLimit = value;
                     await this.plugin.saveSettings();
                 })
             );
@@ -88,8 +134,8 @@ export class AISettingTab extends PluginSettingTab {
         containerEl.createEl('h4', { text: 'Прокси для загрузки ссылок' });
 
         new Setting(containerEl)
-            .setName('Использовать прокси')
-            .setDesc('Загружать веб-страницы через HTTP прокси')
+            .setName('Использовать HTTP прокси')
+            .setDesc('Загружать веб-страницы через HTTP прокси. Отключите свой прокси перед включением.')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.proxyEnabled)
                 .onChange(async (value) => {
@@ -99,10 +145,10 @@ export class AISettingTab extends PluginSettingTab {
             );
 
         new Setting(containerEl)
-            .setName('URL прокси')
-            .setDesc('Адрес HTTP прокси, например: http://user:pass@host:8080')
+            .setName('Адрес HTTP прокси')
+            .setDesc('Адрес HTTP прокси в формате host:port. Прокси с авторизацией не поддерживается.')
             .addText(text => text
-                .setPlaceholder('http://user:pass@host:8080')
+                .setPlaceholder('host:port')
                 .setValue(this.plugin.settings.proxyUrl)
                 .onChange(async (value) => {
                     this.plugin.settings.proxyUrl = value.trim();
