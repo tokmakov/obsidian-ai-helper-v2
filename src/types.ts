@@ -3,6 +3,7 @@ export interface AIPluginSettings {
     baseUrl: string;
     model: string;
     availableModels: string[];
+    contextLimit: number;
     fontSize: number;
     loggingEnabled: boolean;
     logsRetentionDays: number;
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS: AIPluginSettings = {
     baseUrl: 'https://api.ai-mediator.ru/v1',
     model: '',
     availableModels: [],
+    contextLimit: 20,
     fontSize: 13,
     loggingEnabled: false,
     logsRetentionDays: 30,

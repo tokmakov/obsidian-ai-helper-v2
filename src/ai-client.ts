@@ -55,7 +55,12 @@ export class AIClient {
         doSearch: boolean
     ): Promise<AIResult> {
         const report: SourceReport[] = [];
-        const lastMessage = messages[messages.length - 1];
+
+        // Ограничиваем контекст — берём последние N сообщений
+        const limit = this.settings.contextLimit ?? 20;
+        const trimmed = messages.slice(-limit);
+
+        const lastMessage = trimmed[trimmed.length - 1];
 
         if (lastMessage?.role === 'user') {
 
@@ -70,57 +75,39 @@ export class AIClient {
                     for (const url of urls) {
                         const result = await this.webReader.readUrl(url);
                         if (result.success) {
-                            report.push({
-                                type: 'link',
-                                url,
-                                title: result.title,
-                                success: true
-                            });
+                            report.push({ type: 'link', url, title: result.title, success: true });
                             parts.push([
-                                `## ${result.title}`,
-                                `**Источник:** ${url}`,
+                                `## \${result.title}`,
+                                `**Источник:** \${url}`,
                                 `---`,
                                 result.markdown
                             ].join('\n\n'));
                         } else {
-                            report.push({
-                                type: 'link',
-                                url,
-                                success: false,
-                                error: result.error
-                            });
+                            report.push({ type: 'link', url, success: false, error: result.error });
                         }
                     }
 
                     if (parts.length > 0) {
                         const context = parts.join('\n\n---\n\n');
-                        const messagesWithContext = [...messages];
-                        messagesWithContext[messagesWithContext.length - 1] = {
+                        const withContext = [...trimmed];
+                        withContext[withContext.length - 1] = {
                             ...lastMessage,
-                            content: `${lastMessage.content}\n\n---\nКонтекст из ссылок:\n\n${context}`
+                            content: `\${lastMessage.content}\n\n---\nКонтекст из ссылок:\n\n\${context}`
                         };
-                        const result = await this.sendWithRetry(messagesWithContext);
-                        if (result.success) {
-                            return { ...result, report };
-                        }
+                        const result = await this.sendWithRetry(withContext);
+                        if (result.success) return { ...result, report };
                         return result;
                     }
                 }
             }
 
             // Приоритет 2 — поиск в Яндексе если чекбокс установлен
-            if (doSearch &&
-                this.settings.yandexApiKey &&
-                this.settings.yandexFolderId) {
-
+            if (doSearch && this.settings.yandexApiKey && this.settings.yandexFolderId) {
                 new Notice('🔍 Ищу в интернете (Яндекс)...');
                 try {
                     const searchResults = await this.webSearch.searchYandex(
                         lastMessage.content,
-                        {
-                            apiKey: this.settings.yandexApiKey,
-                            folderId: this.settings.yandexFolderId
-                        }
+                        { apiKey: this.settings.yandexApiKey, folderId: this.settings.yandexFolderId }
                     );
 
                     if (searchResults.length > 0) {
@@ -129,40 +116,22 @@ export class AIClient {
                         for (const sr of searchResults.slice(0, this.settings.searchResultsLimit)) {
                             const pageResult = await this.webReader.readUrl(sr.url);
                             if (pageResult.success) {
-                                report.push({
-                                    type: 'search',
-                                    url: sr.url,
-                                    title: pageResult.title,
-                                    success: true
-                                });
-                                parts.push([
-                                    `### ${pageResult.title}`,
-                                    sr.url,
-                                    pageResult.markdown
-                                ].join('\n\n'));
+                                report.push({ type: 'search', url: sr.url, title: pageResult.title, success: true });
+                                parts.push([`### \${pageResult.title}`, sr.url, pageResult.markdown].join('\n\n'));
                             } else {
-                                report.push({
-                                    type: 'search',
-                                    url: sr.url,
-                                    title: sr.title,
-                                    success: false,
-                                    error: pageResult.error
-                                });
-                                // Используем сниппет если страница не загрузилась
-                                parts.push(`### ${sr.title}\n${sr.url}\n${sr.snippet}`);
+                                report.push({ type: 'search', url: sr.url, title: sr.title, success: false, error: pageResult.error });
+                                parts.push(`### \${sr.title}\n\${sr.url}\n\${sr.snippet}`);
                             }
                         }
 
                         const searchContext = parts.join('\n\n---\n\n');
-                        const messagesWithContext = [...messages];
-                        messagesWithContext[messagesWithContext.length - 1] = {
+                        const withContext = [...trimmed];
+                        withContext[withContext.length - 1] = {
                             ...lastMessage,
-                            content: `${lastMessage.content}\n\n---\nРезультаты поиска в интернете:\n\n${searchContext}`
+                            content: `\${lastMessage.content}\n\n---\nРезультаты поиска в интернете:\n\n\${searchContext}`
                         };
-                        const result = await this.sendWithRetry(messagesWithContext);
-                        if (result.success) {
-                            return { ...result, report };
-                        }
+                        const result = await this.sendWithRetry(withContext);
+                        if (result.success) return { ...result, report };
                         return result;
                     }
                 } catch (error) {
@@ -172,10 +141,8 @@ export class AIClient {
             }
         }
 
-        const result = await this.sendWithRetry(messages);
-        if (result.success) {
-            return { ...result, report };
-        }
+        const result = await this.sendWithRetry(trimmed);
+        if (result.success) return { ...result, report };
         return result;
     }
 

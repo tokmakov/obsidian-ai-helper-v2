@@ -44,6 +44,22 @@ export class AISettingTab extends PluginSettingTab {
                 text.inputEl.type = 'password';
             });
 
+        // --- Размер контекста ---
+        containerEl.createEl('h4', { text: 'Размер контекста' });
+
+        new Setting(containerEl)
+            .setName('Размер контекста')
+            .setDesc('Сколько последних сообщений передавать модели')
+            .addSlider(slider => slider
+                .setLimits(10, 50, 10)
+                .setValue(this.plugin.settings.contextLimit)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.contextLimit = value;
+                    await this.plugin.saveSettings();
+                })
+            );
+
         // --- Скачивание ссылок ---
         containerEl.createEl('h4', { text: 'Скачивание ссылок' });
 
