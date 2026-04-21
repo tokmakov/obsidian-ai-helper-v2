@@ -1,4 +1,4 @@
-import { Notice } from 'obsidian';
+import { Notice, Vault } from 'obsidian';
 import { AIPluginSettings, ChatMessage, SourceReport } from './types';
 import { Logger } from './logger';
 import { WebReader } from './web-reader';
@@ -13,17 +13,41 @@ export class AIClient {
     private logger: Logger;
     private webReader: WebReader;
     private webSearch: WebSearch;
+    private vault: Vault;
+    private imagesDir: string;
 
-    constructor(settings: AIPluginSettings, logger: Logger) {
+    constructor(settings: AIPluginSettings, logger: Logger, vault: Vault, imagesDir: string) {
         this.settings = settings;
         this.logger = logger;
         this.webReader = new WebReader(this.settings, this.logger);
         this.webSearch = new WebSearch();
+        this.vault = vault;
+        this.imagesDir = imagesDir;
     }
 
     updateSettings(settings: AIPluginSettings): void {
         this.settings = settings;
         this.webReader.updateSettings(settings);
+    }
+
+    // Читает файл изображения и возвращает data URL для отправки в API
+    private async readImageAsDataUrl(fileName: string): Promise<string | null> {
+        try {
+            const path = `${this.imagesDir}/${fileName}`;
+            const arrayBuffer = await this.vault.adapter.readBinary(path);
+            const bytes = new Uint8Array(arrayBuffer);
+            // Обходим через chunks чтобы не выйти за лимит стека
+            const chunkSize = 8192;
+            let binary64 = '';
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+                binary64 += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+            }
+            const base64 = btoa(binary64);
+            return `data:image/jpeg;base64,${base64}`;
+        } catch (error) {
+            await this.logger.error('Не удалось прочитать файл изображения', error);
+            return null;
+        }
     }
 
     private parseSuggestions(raw: string): { content: string; suggestions: string[] } {
@@ -56,7 +80,6 @@ export class AIClient {
     ): Promise<AIResult> {
         const report: SourceReport[] = [];
 
-        // Ограничиваем контекст — берём последние N сообщений
         const limit = this.settings.contextLimit ?? 20;
         const trimmed = messages.slice(-limit);
 
@@ -64,7 +87,6 @@ export class AIClient {
 
         if (lastMessage?.role === 'user') {
 
-            // Приоритет 1 — загружаем ссылки если чекбокс установлен
             if (loadLinks) {
                 const urls = this.webReader.extractUrls(lastMessage.content);
 
@@ -77,8 +99,8 @@ export class AIClient {
                         if (result.success) {
                             report.push({ type: 'link', url, title: result.title, success: true });
                             parts.push([
-                                `## \${result.title}`,
-                                `**Источник:** \${url}`,
+                                `## ${result.title}`,
+                                `**Источник:** ${url}`,
                                 `---`,
                                 result.markdown
                             ].join('\n\n'));
@@ -92,7 +114,7 @@ export class AIClient {
                         const withContext = [...trimmed];
                         withContext[withContext.length - 1] = {
                             ...lastMessage,
-                            content: `\${lastMessage.content}\n\n---\nКонтекст из ссылок:\n\n\${context}`
+                            content: `${lastMessage.content}\n\n---\nКонтекст из ссылок:\n\n${context}`
                         };
                         const result = await this.sendWithRetry(withContext);
                         if (result.success) return { ...result, report };
@@ -101,7 +123,6 @@ export class AIClient {
                 }
             }
 
-            // Приоритет 2 — поиск в Яндексе если чекбокс установлен
             if (doSearch && this.settings.yandexApiKey && this.settings.yandexFolderId) {
                 new Notice('🔍 Ищу в интернете (Яндекс)...');
                 try {
@@ -117,10 +138,10 @@ export class AIClient {
                             const pageResult = await this.webReader.readUrl(sr.url);
                             if (pageResult.success) {
                                 report.push({ type: 'search', url: sr.url, title: pageResult.title, success: true });
-                                parts.push([`### \${pageResult.title}`, sr.url, pageResult.markdown].join('\n\n'));
+                                parts.push([`### ${pageResult.title}`, sr.url, pageResult.markdown].join('\n\n'));
                             } else {
                                 report.push({ type: 'search', url: sr.url, title: sr.title, success: false, error: pageResult.error });
-                                parts.push(`### \${sr.title}\n\${sr.url}\n\${sr.snippet}`);
+                                parts.push(`### ${sr.title}\n${sr.url}\n${sr.snippet}`);
                             }
                         }
 
@@ -128,7 +149,7 @@ export class AIClient {
                         const withContext = [...trimmed];
                         withContext[withContext.length - 1] = {
                             ...lastMessage,
-                            content: `\${lastMessage.content}\n\n---\nРезультаты поиска в интернете:\n\n\${searchContext}`
+                            content: `${lastMessage.content}\n\n---\nРезультаты поиска в интернете:\n\n${searchContext}`
                         };
                         const result = await this.sendWithRetry(withContext);
                         if (result.success) return { ...result, report };
@@ -184,9 +205,38 @@ export class AIClient {
             return { success: false };
         }
 
-        const cleanMessages = messages.map(m => ({
-            role: m.role,
-            content: String(m.content).trim()
+        // Индекс последнего сообщения пользователя
+        const lastUserIndex = messages.reduce(
+            (last, m, i) => (m.role === 'user' ? i : last), -1
+        );
+
+        const cleanMessages = await Promise.all(messages.map(async (m, index) => {
+            const textContent = String(m.content).trim();
+
+            // Изображение прикладываем только к последнему сообщению пользователя
+            if (m.imageFileName && index === lastUserIndex) {
+                const dataUrl = await this.readImageAsDataUrl(m.imageFileName);
+                if (dataUrl) {
+                    return {
+                        role: m.role,
+                        content: [
+                            {
+                                type: 'text',
+                                text: textContent
+                                    ? `${textContent}\n\nИспользуй изображение для ответа на вопрос.`
+                                    : 'Опиши что изображено на картинке.'
+                            },
+                            {
+                                type: 'image_url',
+                                image_url: { url: dataUrl }
+                            }
+                        ]
+                    };
+                }
+            }
+
+            // Для всех остальных сообщений — только текст
+            return { role: m.role, content: textContent };
         }));
 
         const payload = {
@@ -253,7 +303,6 @@ export class AIClient {
             }
 
             const { content, suggestions } = this.parseSuggestions(raw);
-            // report здесь пустой — он формируется в sendMessage
             return { success: true, content, suggestions, report: [] };
 
         } catch (error) {

@@ -5,16 +5,23 @@ import { AIChatView, CHAT_VIEW_TYPE } from './chat-view';
 import { AIClient } from './ai-client';
 import { SessionManager } from './session-manager';
 import { Logger } from './logger';
+import { ImageHandler } from './image-handler';
 
 export default class AIHelperPlugin extends Plugin {
     settings: AIPluginSettings;
     aiClient: AIClient;
     sessionManager: SessionManager;
     logger: Logger;
+    imageHandler: ImageHandler;
 
     // Папка плагина внутри vault
     private get pluginDir(): string {
         return `.obsidian/plugins/${this.manifest.id}`;
+    }
+
+    // Папка для хранения изображений внутри vault
+    private get imagesDir(): string {
+        return `${this.pluginDir}/images`;
     }
 
     async onload() {
@@ -28,7 +35,14 @@ export default class AIHelperPlugin extends Plugin {
 
         this.sessionManager = new SessionManager(
             this.app.vault,
-            this.pluginDir
+            this.pluginDir,
+            this.imagesDir
+        );
+
+        this.imageHandler = new ImageHandler(
+            this.app.vault,
+            this.pluginDir,
+            this.logger
         );
 
         // Чистим старые сессии при старте
@@ -37,7 +51,12 @@ export default class AIHelperPlugin extends Plugin {
         await this.logger.cleanOldLogs(this.settings.logsRetentionDays);
 
         // Инициализируем AI клиент
-        this.aiClient = new AIClient(this.settings, this.logger);
+        this.aiClient = new AIClient(
+            this.settings,
+            this.logger,
+            this.app.vault,
+            this.imagesDir
+        );
 
         // Регистрируем боковую панель справа
         this.registerView(

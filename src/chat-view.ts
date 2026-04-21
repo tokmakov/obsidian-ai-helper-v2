@@ -2,6 +2,7 @@ import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, MarkdownView, Editor
 import { ChatMessage, SourceReport } from './types';
 import AIHelperPlugin from './main';
 import { ChatSession } from './session-manager';
+import { AttachedImage } from './image-handler';
 
 export const CHAT_VIEW_TYPE = 'ai-chat-view-v2';
 
@@ -20,6 +21,9 @@ export class AIChatView extends ItemView {
     private loadLinksCheckbox: HTMLInputElement;
     private searchCheckbox: HTMLInputElement;
 
+    private attachedImages: AttachedImage[] = [];
+    private imageFooterEl: HTMLElement;
+
     constructor(leaf: WorkspaceLeaf, plugin: AIHelperPlugin) {
         super(leaf);
         this.plugin = plugin;
@@ -32,11 +36,8 @@ export class AIChatView extends ItemView {
     async onOpen(): Promise<void> {
         this.buildUI();
 
-        // Загружаем последнюю сессию или создаём новую
         await this.loadOrCreateSession();
 
-        // Запоминаем редактор, чтобы вставить ответ AI-помощника
-        // из чата в позицию курсора этого радактора
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
                 const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -72,12 +73,8 @@ export class AIChatView extends ItemView {
         this.buildInputArea(container);
     }
 
-    // Шапка панели диалога с AI-помощником
     private buildHeader(container: HTMLElement): void {
-        // Состоит из двух рядов — верхнего и нижнего
         const header = container.createDiv({ cls: 'ai-chat-header' });
-
-        // Верхний ряд — заголовок, модель, кнопки
         const headerTop = header.createDiv({ cls: 'ai-chat-header-top' });
 
         headerTop.createEl('span', {
@@ -90,7 +87,6 @@ export class AIChatView extends ItemView {
             cls: 'ai-chat-model-label'
         });
 
-        // Кнопка создания нового диалога
         const newBtn = headerTop.createEl('button', {
             text: '➕',
             cls: 'ai-chat-clear-btn',
@@ -98,7 +94,6 @@ export class AIChatView extends ItemView {
         });
         newBtn.addEventListener('click', () => this.startNewSession());
 
-        // Кнопка удаления текущего диалога
         const clearBtn = headerTop.createEl('button', {
             text: '🗑️',
             cls: 'ai-chat-clear-btn',
@@ -106,7 +101,6 @@ export class AIChatView extends ItemView {
         });
         clearBtn.addEventListener('click', () => this.deleteCurrentSession());
 
-        // Кнопка закрытия панели диалога
         const closeBtn = headerTop.createEl('button', {
             text: '✖️',
             cls: 'ai-chat-clear-btn',
@@ -114,7 +108,6 @@ export class AIChatView extends ItemView {
         });
         closeBtn.addEventListener('click', () => this.leaf.detach());
 
-        // Нижний ряд — список сессий на всю ширину
         this.sessionListEl = header.createEl('select', {
             cls: 'ai-chat-session-select'
         });
@@ -142,20 +135,34 @@ export class AIChatView extends ItemView {
             }
         }, true);
 
-        // Строка с чекбоксами «Загружать ссылки» и «Искать в Яндекс»
+        this.inputEl.addEventListener('paste', async (e: ClipboardEvent) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            for (const item of Array.from(items)) {
+                if (item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const file = item.getAsFile();
+                    if (!file) continue;
+                    const image = await this.plugin.imageHandler.processClipboardImage(file);
+                    if (image) {
+                        this.attachedImages.push(image);
+                        this.refreshImageFooter();
+                    }
+                    break;
+                }
+            }
+        });
+
         const checkboxRow = inputArea.createDiv({ cls: 'ai-chat-checkbox-row' });
 
-        // Первый чекбокс — «Загружать ссылки»
         const linksLabel = checkboxRow.createEl('label', { cls: 'ai-chat-checkbox-label' });
         this.loadLinksCheckbox = linksLabel.createEl('input', { attr: { type: 'checkbox' } });
         linksLabel.createEl('span', { text: ' 🌐 Загружать ссылки' });
 
-        // Второй чекбокс — «Искать в Яндекс»
         const searchLabel = checkboxRow.createEl('label', { cls: 'ai-chat-checkbox-label' });
         this.searchCheckbox = searchLabel.createEl('input', { attr: { type: 'checkbox' } });
         searchLabel.createEl('span', { text: ' 🔍 Искать в Яндекс' });
 
-        // Если поиск не настроен — блокируем чекбокс
         if (!this.plugin.settings.yandexApiKey || !this.plugin.settings.yandexFolderId) {
             this.searchCheckbox.disabled = true;
             searchLabel.title = 'Настрой Яндекс API в настройках плагина';
@@ -163,10 +170,7 @@ export class AIChatView extends ItemView {
 
         const inputFooter = inputArea.createDiv({ cls: 'ai-chat-input-footer' });
 
-        inputFooter.createEl('span', {
-            text: 'Ctrl+Enter для отправки',
-            cls: 'ai-chat-hint'
-        });
+        this.imageFooterEl = inputFooter.createDiv({ cls: 'ai-chat-attached-list' });
 
         this.sendButton = inputFooter.createEl('button', {
             text: 'Отправить',
@@ -175,15 +179,37 @@ export class AIChatView extends ItemView {
         this.sendButton.addEventListener('click', () => this.handleSend());
     }
 
+    private refreshImageFooter(): void {
+        this.imageFooterEl.empty();
+
+        this.attachedImages.forEach((image, index) => {
+            const tag = this.imageFooterEl.createDiv({ cls: 'ai-chat-attached-tag' });
+
+            tag.createEl('span', {
+                text: image.fileName,
+                cls: 'ai-chat-attached-name'
+            });
+
+            const removeBtn = tag.createEl('button', {
+                text: '✖',
+                cls: 'ai-chat-attached-remove',
+                attr: { title: 'Удалить изображение' }
+            });
+            removeBtn.addEventListener('click', async () => {
+                await this.plugin.imageHandler.deleteImage(image.fileName);
+                this.attachedImages.splice(index, 1);
+                this.refreshImageFooter();
+            });
+        });
+    }
 
     private renderWelcome(): void {
         const welcome = this.messagesContainer.createDiv({ cls: 'ai-chat-welcome' });
         welcome.createEl('p', { text: '👋 Привет! Чем могу помочь?' });
     }
-
     private async renderMessage(message: ChatMessage): Promise<void> {
         const msgEl = this.messagesContainer.createDiv({
-            cls: `ai-chat-message ai-chat-message-${message.role}`
+            cls: `ai-chat-message ai-chat-message-\${message.role}`
         });
 
         const msgHeader = msgEl.createDiv({ cls: 'ai-chat-message-header' });
@@ -206,6 +232,16 @@ export class AIChatView extends ItemView {
             this
         );
 
+        // Тег с именем файла — после текста вопроса
+        if (message.imageFileName) {
+            const imageTag = msgBody.createDiv({ cls: 'ai-chat-attached-tag ai-chat-attached-tag--sent' });
+            imageTag.createEl('span', { text: '📎 ' });
+            imageTag.createEl('span', {
+                text: message.imageFileName,
+                cls: 'ai-chat-attached-name'
+            });
+        }
+
         if (message.role === 'assistant') {
             this.renderMessageActions(msgEl, message);
         }
@@ -213,7 +249,6 @@ export class AIChatView extends ItemView {
         this.scrollToBottom();
     }
 
-    // вараинты вопросов, которые мог бы задать пользователь
     private renderSuggestions(suggestions: string[]): void {
         if (!suggestions || suggestions.length === 0) return;
 
@@ -230,9 +265,7 @@ export class AIChatView extends ItemView {
                 cls: 'ai-chat-suggestion-btn'
             });
             btn.addEventListener('click', () => {
-                // Удаляем блок подсказок
                 suggestionsEl.remove();
-                // Вставляем текст в поле ввода и отправляем
                 this.inputEl.value = suggestion;
                 this.handleSend();
             });
@@ -241,7 +274,6 @@ export class AIChatView extends ItemView {
         this.scrollToBottom();
     }
 
-    // четыре кнопки под ответом помощника
     private renderMessageActions(container: HTMLElement, message: ChatMessage): void {
         const actions = container.createDiv({ cls: 'ai-chat-message-actions' });
 
@@ -271,35 +303,27 @@ export class AIChatView extends ItemView {
             cls: 'ai-chat-action-btn'
         });
         deleteBtn.addEventListener('click', async () => {
-            // Сохраняем ссылки до удаления из DOM
             const prevEl = container.previousElementSibling;
             const nextEl = container.nextElementSibling;
 
-            // Находим индекс сообщения и удаляем из массива
             const index = this.messages.indexOf(message);
             if (index !== -1) {
-                // Удаляем ответ AI помощника
                 this.messages.splice(index, 1);
-                // Удаляем вопрос пользователя
                 if (index > 0 && this.messages[index - 1]?.role === 'user') {
                     this.messages.splice(index - 1, 1);
                 }
             }
 
-            // Удаляем подсказки после ответа если есть
             if (nextEl?.classList.contains('ai-chat-suggestions')) {
                 nextEl.remove();
             }
 
-            // Удаляем вопрос пользователя перед ответом
             if (prevEl?.classList.contains('ai-chat-message-user')) {
                 prevEl.remove();
             }
 
-            // Удаляем сам ответ AI помощника
             container.remove();
 
-            // Если не осталось вопросов и ответов — удаляем сессию и создаём новую
             if (this.messages.length === 0) {
                 if (this.currentSession) {
                     await this.plugin.sessionManager.delete(this.currentSession.id);
@@ -318,7 +342,6 @@ export class AIChatView extends ItemView {
     private renderReport(report: SourceReport[]): void {
         const reportEl = this.messagesContainer.createDiv({ cls: 'ai-chat-report' });
 
-        // Заголовок — кликабельный, сворачивает/разворачивает
         const header = reportEl.createEl('div', { cls: 'ai-chat-report-header' });
         header.createEl('span', { text: '📋 Источники' });
         const toggle = header.createEl('span', {
@@ -350,7 +373,6 @@ export class AIChatView extends ItemView {
             }
         }
 
-        // Логика сворачивания
         header.addEventListener('click', () => {
             const isHidden = body.style.display === 'none';
             body.style.display = isHidden ? 'block' : 'none';
@@ -362,27 +384,33 @@ export class AIChatView extends ItemView {
 
     private async handleSend(): Promise<void> {
         const text = this.inputEl.value.trim();
-        if (!text) return;
+        if (!text && this.attachedImages.length === 0) return;
 
         this.inputEl.value = '';
 
-        // Удаляем старые подсказки если есть
         this.messagesContainer.querySelector('.ai-chat-suggestions')?.remove();
+
+        // Берём имя файла первого прикреплённого изображения
+        const imageFileName = this.attachedImages[0]?.fileName;
 
         const userMessage: ChatMessage = {
             role: 'user',
             content: text,
-            timestamp: new Date()
+            timestamp: new Date(),
+            imageFileName
         };
         this.messages.push(userMessage);
         await this.renderMessage(userMessage);
+
+        // Очищаем прикреплённые изображения после отправки
+        this.attachedImages = [];
+        this.refreshImageFooter();
 
         this.setLoading(true);
 
         const loadLinks = this.loadLinksCheckbox.checked;
         const doSearch = this.searchCheckbox.checked;
 
-        // Сбрасываем чекбоксы после отправки
         this.loadLinksCheckbox.checked = false;
         this.searchCheckbox.checked = false;
 
@@ -400,15 +428,12 @@ export class AIChatView extends ItemView {
             this.messages.push(assistantMessage);
             await this.renderMessage(assistantMessage);
 
-            // Показываем блок отчёта если есть что показать
             if (result.report.length > 0) {
                 this.renderReport(result.report);
             }
 
-            // Показываем подсказки под ответом
             this.renderSuggestions(result.suggestions);
 
-            // Автосохранение сессии
             if (this.currentSession) {
                 this.currentSession.messages = this.messages;
                 this.currentSession.lastSuggestions = result.suggestions;
@@ -447,8 +472,6 @@ export class AIChatView extends ItemView {
     }
 
     private async insertToNote(content: string): Promise<void> {
-        // Сначала пробуем последний запомненный редактор
-        // и вставляем в позицию курсора
         const editor = this.lastEditor ??
             this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
 
@@ -459,7 +482,6 @@ export class AIChatView extends ItemView {
             return;
         }
 
-        // Иначе — вставляем в конец файла
         const activeFile = this.app.workspace.getActiveFile();
         if (!activeFile) {
             new Notice('❌ Нет открытой заметки');
@@ -475,7 +497,6 @@ export class AIChatView extends ItemView {
         try {
             const now = new Date();
 
-            // Формируем имя файла без запрещённых символов
             const pad = (n: number) => n.toString().padStart(2, '0');
             const datePart = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
             const timePart = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
@@ -530,7 +551,6 @@ export class AIChatView extends ItemView {
             for (const message of this.messages) {
                 await this.renderMessage(message);
             }
-            // Восстанавливаем подсказки последнего ответа
             if (session.lastSuggestions && session.lastSuggestions.length > 0) {
                 this.renderSuggestions(session.lastSuggestions);
             }

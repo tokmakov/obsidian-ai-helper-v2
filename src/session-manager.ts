@@ -13,12 +13,13 @@ export interface ChatSession {
 export class SessionManager {
     private vault: Vault;
     private sessionsDir: string;
-    private readonly MAX_DAYS = 100;
+    private imagesDir: string;
     private readonly TITLE_MAX_LENGTH = 75;
 
-    constructor(vault: Vault, pluginDir: string) {
+    constructor(vault: Vault, pluginDir: string, imagesDir: string) {
         this.vault = vault;
         this.sessionsDir = `${pluginDir}/sessions`;
+        this.imagesDir = imagesDir;
     }
 
     private async ensureSessionsDir(): Promise<void> {
@@ -36,7 +37,6 @@ export class SessionManager {
         const text = firstUser.content.trim();
         if (text.length <= this.TITLE_MAX_LENGTH) return text;
 
-        // Обрезаем по последнему слову
         const truncated = text.slice(0, this.TITLE_MAX_LENGTH);
         const lastSpace = truncated.lastIndexOf(' ');
         return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated) + '...';
@@ -88,7 +88,6 @@ export class SessionManager {
                 }
             }
 
-            // Сортируем от новых к старым
             sessions.sort((a, b) =>
                 new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
             );
@@ -99,8 +98,30 @@ export class SessionManager {
         }
     }
 
+    // Удаляет файлы изображений, прикреплённых к сообщениям сессии
+    private async deleteSessionImages(session: ChatSession): Promise<void> {
+        for (const message of session.messages) {
+            if (message.imageFileName) {
+                const imagePath = `${this.imagesDir}/${message.imageFileName}`;
+                try {
+                    await this.vault.adapter.remove(imagePath);
+                } catch {
+                    console.error(`[AI Helper] Не удалось удалить изображение: ${imagePath}`);
+                }
+            }
+        }
+    }
+
     async delete(id: string): Promise<void> {
         const filePath = this.getFilePath(id);
+        try {
+            // Сначала читаем сессию, чтобы удалить связанные изображения
+            const raw = await this.vault.adapter.read(filePath);
+            const session = JSON.parse(raw) as ChatSession;
+            await this.deleteSessionImages(session);
+        } catch {
+            // Сессия не читается — удаляем файл сессии, нет смысла хранить
+        }
         try {
             await this.vault.adapter.remove(filePath);
         } catch {
@@ -120,6 +141,7 @@ export class SessionManager {
                     const raw = await this.vault.adapter.read(filePath);
                     const session = JSON.parse(raw) as ChatSession;
                     if (new Date(session.updatedAt) < cutoff) {
+                        await this.deleteSessionImages(session);
                         await this.vault.adapter.remove(filePath);
                         console.log(`[AI Helper] Удалена старая сессия: ${session.title}`);
                     }
