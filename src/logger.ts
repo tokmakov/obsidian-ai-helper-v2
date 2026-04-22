@@ -83,8 +83,38 @@ export class Logger {
 
     async request(payload: unknown): Promise<void> {
         if (!this.enabled) return;
-        await this.writeToFile(this.formatEntry('REQUEST', 'Отправляем запрос к API', payload));
+        const sanitized = this.sanitizePayload(payload);
+        await this.writeToFile(this.formatEntry('REQUEST', 'Отправляем запрос к API', sanitized));
     }
+
+    private sanitizePayload(payload: unknown): unknown {
+        if (!payload || typeof payload !== 'object') return payload;
+
+        const p = payload as Record<string, unknown>;
+        if (!Array.isArray(p['messages'])) return payload;
+
+        const messages = (p['messages'] as unknown[]).map(msg => {
+            if (!msg || typeof msg !== 'object') return msg;
+            const m = msg as Record<string, unknown>;
+
+            if (!Array.isArray(m['content'])) return m;
+
+            const content = (m['content'] as unknown[]).map(part => {
+                if (!part || typeof part !== 'object') return part;
+                const p = part as Record<string, unknown>;
+
+                if (p['type'] === 'image_url') {
+                    return { type: 'image_url', image_url: { url: '[base64 image]' } };
+                }
+                return p;
+            });
+
+            return { ...m, content };
+        });
+
+        return { ...p, messages };
+    }
+
 
     async response(data: unknown): Promise<void> {
         if (!this.enabled) return;
